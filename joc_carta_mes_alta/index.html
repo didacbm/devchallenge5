@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="ca">
+<head>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <h1>Carta més alta</h1>
+
+    <!-- Gestió de Sales -->
+    <div id="gestioSales">
+        <button onclick="crearSala()">Crear Sala</button>
+        <p id="codiSala"></p>
+        <input type="text" id="codiSalaInput" placeholder="Codi de la Sala">
+        <button onclick="unirSala()">Unir-se a la Sala</button>
+    </div>
+
+    <!-- Joc -->
+    <div id="game" style="display: none;">
+        <h2 id="playerTitle"></h2>
+        <div class="scoreboard">
+            Jugador 1: <span id="scorePlayer1">0</span> | Jugador 2: <span id="scorePlayer2">0</span>
+        </div>
+        <div id="playerCards" class="cards"></div>
+        <button id="confirmSelection" style="display: none;">Confirma</button>
+    </div>
+
+    <div id="result"></div>
+    <div id="endGameMessage" class="hidden"></div>
+
+    <script>
+        const ws = new WebSocket('ws://localhost:8080');
+        let codiSala = new URLSearchParams(window.location.search).get('sala'); // Obtenir el codi de la URL
+        let player = null;
+        let cartes = [];
+        let selectedCardIndex = null;
+        let selectionLocked = false; // Bloqueja el canvi de carta després de confirmar
+        let scores = { jugador1: 0, jugador2: 0 };
+        let roundsPlayed = 0;
+        const maxRounds = 5;
+
+        ws.onmessage = function(event) {
+            const data = JSON.parse(event.data);
+
+            if (data.type === "salaCreada") {
+                codiSala = data.codi;
+                window.history.pushState({}, '', `?sala=${codiSala}`);
+                document.getElementById("codiSala").innerText = "Codi de Sala: " + codiSala;
+            }
+
+            if (data.type === "iniciarPartida") {
+                document.getElementById("gestioSales").style.display = "none";
+                document.getElementById("game").style.display = "block";
+                document.getElementById("playerTitle").textContent = `Ets ${player}`;
+                cartes = data.cartes;
+                selectionLocked = false; // Reset de bloqueig de selecció a nova ronda
+                renderCards(cartes);
+            }
+
+            if (data.type === "resultat") {
+                roundsPlayed++;
+                mostrarResultat(data);
+                updateScores(data.guanyador);
+                marcarCartaUsada(data);
+                checkGameEnd();
+                selectionLocked = false; // Tornar a permetre seleccionar una carta a la següent ronda
+            }
+        };
+
+        function crearSala() {
+            ws.send(JSON.stringify({ type: "crearSala" }));
+            player = "jugador1";
+        }
+
+        function unirSala() {
+            codiSala = document.getElementById("codiSalaInput").value;
+            window.history.pushState({}, '', `?sala=${codiSala}`);
+            ws.send(JSON.stringify({ type: "unirSala", codiSala }));
+            player = "jugador2";
+        }
+
+        function renderCards(cards) {
+            const cardsContainer = document.getElementById('playerCards');
+            cardsContainer.innerHTML = '';
+
+            cards.forEach((card, index) => {
+                const cardDiv = document.createElement('div');
+                cardDiv.className = "card";
+
+                // Només es mostra el dors de la carta fins que es juga
+                const img = document.createElement('img');
+                img.src = `images/back.png`;
+                img.alt = "Dors de la carta";
+                cardDiv.appendChild(img);
+
+                cardDiv.onclick = function() { seleccionarCarta(index); };
+                cardsContainer.appendChild(cardDiv);
+            });
+        }
+
+        function seleccionarCarta(index) {
+            if (selectionLocked) return; // Evitar canviar la carta després de confirmar
+
+            selectedCardIndex = index;
+            document.querySelectorAll('.card').forEach(card => card.classList.remove('selected'));
+            document.querySelectorAll('.card')[index].classList.add('selected');
+            document.getElementById("confirmSelection").style.display = "block";
+        }
+
+        document.getElementById('confirmSelection').addEventListener('click', () => {
+            if (selectedCardIndex === null) return; // No permet confirmar si no s'ha seleccionat cap carta
+
+            ws.send(JSON.stringify({ type: 'seleccionarCarta', codiSala, jugador: player, index: selectedCardIndex }));
+            document.getElementById("confirmSelection").style.display = "none";
+            selectionLocked = true; // Bloqueja el canvi de carta fins a la següent ronda
+        });
+
+        function mostrarResultat(data) {
+            document.getElementById('result').innerHTML = `
+                <strong>Guanyador: ${data.guanyador}</strong><br>
+                Jugador 1: ${data.jugador1.valor} de ${data.jugador1.pal}<br>
+                Jugador 2: ${data.jugador2.valor} de ${data.jugador2.pal}
+            `;
+        }
+
+        function updateScores(winningPlayer) {
+            if (winningPlayer === 'jugador1') scores.jugador1++;
+            if (winningPlayer === 'jugador2') scores.jugador2++;
+            document.getElementById('scorePlayer1').textContent = scores.jugador1;
+            document.getElementById('scorePlayer2').textContent = scores.jugador2;
+        }
+
+        function marcarCartaUsada(data) {
+            const cardDiv = document.querySelector(`.card.selected`);
+            if (cardDiv) {
+                cardDiv.classList.add('used');
+
+                // Mostra la carta real un cop s’ha jugat
+                const img = cardDiv.querySelector('img');
+                const carta = player === 'jugador1' ? data.jugador1 : data.jugador2;
+                img.src = `images/${carta.valor}${carta.pal}.png`;
+                img.alt = `${carta.valor} de ${carta.pal}`;
+            }
+        }
+
+        function checkGameEnd() {
+            if (roundsPlayed >= maxRounds) {
+                const endGameMessage = document.getElementById('endGameMessage');
+                const winner =
+                    scores.jugador1 > scores.jugador2
+                        ? 'jugador1'
+                        : scores.jugador2 > scores.jugador1
+                        ? 'jugador2'
+                        : 'empat';
+
+                endGameMessage.className = ''; 
+
+                if (winner === 'empat') {
+                    endGameMessage.textContent = 'EMPAT!';
+                    endGameMessage.classList.add('draw');
+                } else if (winner === player) {
+                    endGameMessage.textContent = 'VICTÒRIA!';
+                    endGameMessage.classList.add('victory');
+                } else {
+                    endGameMessage.textContent = 'DERROTA!';
+                    endGameMessage.classList.add('defeat');
+                }
+
+                endGameMessage.style.display = 'block';
+            }
+        }
+
+        // Si un jugador accedeix amb una URL de sala, intenta unir-se automàticament
+        if (codiSala) {
+            ws.send(JSON.stringify({ type: "unirSala", codiSala }));
+            player = "jugador2";
+        }
+    </script>
+</body>
+</html>
